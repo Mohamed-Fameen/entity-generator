@@ -1,6 +1,6 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.github.mohamedfameen.entitygenerator</id>
+    <id>com..mohamedfameen.entitygenerator</id>
     <name>entity-generator</name>
     <vendor>mohamed-fameen</vendor>
     <description><![CDATA[
@@ -9,11 +9,29 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
-    <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.mohamedfameen.entitygenerator.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.mohamedfameen.entitygenerator.startup.MyProjectActivity" />
-    </extensions>
+    <actions>
+        <group id="EntityGenerator.PopupGroup" text="Generate Entity" popup="true">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+
+            <action id="EntityGenerator.FromDbSource"
+                    class="com.entitygenerator.action.GenerateEntityFromDbSourceAction"
+                    text="From DB Source..."
+                    description="Generate a JPA entity from a database table"/>
+
+            <action id="EntityGenerator.FromSqlFile"
+                    class="com.entitygenerator.action.GenerateEntityFromSqlFileAction"
+                    text="From .sql File..."
+                    description="Generate a JPA entity from a .sql DDL file"/>
+
+            <action id="EntityGenerator.FromPastedDdl"
+                    class="com.entitygenerator.action.GenerateEntityFromPastedDdlAction"
+                    text="Paste DDL..."
+                    description="Paste a CREATE TABLE statement to generate a JPA entity"/>
+        </group>
+    </actions>
+
 </idea-plugin>
