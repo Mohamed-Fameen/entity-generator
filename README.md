@@ -1,4 +1,4 @@
-# entity-generator
+# SchemaSmith
 
 An IntelliJ IDEA plugin that generates JPA-annotated Java entity classes directly from SQL DDL — paste a `CREATE TABLE` statement, point at a `.sql` file, or connect straight to a live database, and get ready-to-use Lombok-powered entity classes in seconds.
 
@@ -17,14 +17,10 @@ An IntelliJ IDEA plugin that generates JPA-annotated Java entity classes directl
 - **Persistent, reusable DB connections** — saved connections (host/port/database/type/SSL) persist across IDE restarts, with passwords stored securely via the IDE's OS-level credential store, never in plain text
 - **Multi-database support** — PostgreSQL, MySQL, and H2 out of the box
 
-## Free vs. Pro
-
-Currently, every feature described above — including database connections — is fully free. Database-source generation is planned to become a **Pro** (paid) feature once the project has enough traction to justify JetBrains Marketplace's freemium review process. Paste DDL and .sql File generation will always remain free.
-
 ## Requirements
 
 - IntelliJ IDEA (Community or Ultimate) 2023.1+
-- The generated entities use `jakarta.persistence` and Lombok annotations — **the target project you generate into must have Lombok on its classpath with annotation processing enabled** (`org.projectlombok:lombok` as a `compileOnly` dependency + annotation processor). The plugin itself does not add this for you.
+- The generated entities use `jakarta.persistence` and Lombok annotations — **the target project you generate into must have Lombok on its classpath with annotation processing enabled** (`org.projectlombok:lombok` as a `compileOnly` dependency + annotation processor). SchemaSmith does not add this for you.
 
 ## Usage
 
@@ -53,7 +49,11 @@ CREATE TABLE orders (
 );
 ```
 
-The plugin generates a `Customers.java` with a `@OneToMany(mappedBy = "customer") private List<Orders> orders;`, and an `Orders.java` with `@ManyToOne @JoinColumn(name = "customer_id", nullable = false) private Customer customer;` — a real relationship, not two disconnected classes.
+SchemaSmith generates a `Customers.java` with a `@OneToMany(mappedBy = "customer") private List<Orders> orders;`, and an `Orders.java` with `@ManyToOne @JoinColumn(name = "customer_id", nullable = false) private Customer customer;` — a real relationship, not two disconnected classes.
+
+## Free vs. Pro
+
+Currently, every feature described above — including database connections — is fully free. Database-source generation is planned to become a **Pro** (paid) feature once the project has enough traction to justify JetBrains Marketplace's freemium review process. Paste DDL and .sql File generation will always remain free.
 
 ## Building from source
 
