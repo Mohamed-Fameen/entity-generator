@@ -3,6 +3,7 @@ package com.entitygenerator.action
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VfsUtilCore
 
 class GenerateEntityFromSqlFileAction : DirectoryTargetingAction() {
@@ -17,6 +18,20 @@ class GenerateEntityFromSqlFileAction : DirectoryTargetingAction() {
 
         val file = FileChooser.chooseFile(descriptor, project, null) ?: return
         val ddl = VfsUtilCore.loadText(file)
-        EntityGenerationRunner.runFromDdl(project, directory, ddl, requestedName = null)
+
+        val baseClassName = Messages.showInputDialog(
+            project,
+            "Base class to extend (optional, e.g. com.example.BaseEntity):",
+            "Generate Entity",
+            null
+        )
+
+        EntityGenerationRunner.runFromDdl(
+            project = project,
+            directory = directory,
+            ddl = ddl,
+            requestedName = null,
+            baseClassName = baseClassName?.takeIf { it.isNotBlank() }
+        )
     }
 }

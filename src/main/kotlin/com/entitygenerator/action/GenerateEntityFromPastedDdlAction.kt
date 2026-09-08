@@ -15,7 +15,8 @@ class GenerateEntityFromPastedDdlAction : DirectoryTargetingAction() {
                 project = project,
                 directory = directory,
                 ddl = dialog.ddlText,
-                requestedName = dialog.entityName.takeIf { it.isNotBlank() }
+                requestedName = dialog.entityName.takeIf { it.isNotBlank() },
+                baseClassName = dialog.baseClassName.takeIf { it.isNotBlank() }
             )
         }
     }

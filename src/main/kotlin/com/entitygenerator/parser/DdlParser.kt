@@ -1,10 +1,13 @@
 package com.entitygenerator.parser
 
 import com.entitygenerator.model.Column
+import com.entitygenerator.model.ForeignKey
 import com.entitygenerator.model.Table
+import com.entitygenerator.model.UniqueConstraint
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.statement.create.table.ColumnDefinition
 import net.sf.jsqlparser.statement.create.table.CreateTable
+import net.sf.jsqlparser.statement.create.table.ForeignKeyIndex
 import net.sf.jsqlparser.statement.create.table.Index
 
 class DdlParser {
@@ -21,33 +24,61 @@ class DdlParser {
         ddl.split(";").map { it.trim() }.filter { it.isNotEmpty() }
 
     private fun toTable(createTable: CreateTable): Table {
-        // Table-level constraint: PRIMARY KEY (col1, col2)
-        val tableLevelPk = createTable.indexes
-            ?.filterIsInstance<Index>()
-            ?.firstOrNull { it.type == "PRIMARY KEY" }
+        val allIndexes = createTable.indexes.orEmpty()
+
+        val tableLevelPk = allIndexes
+            .filterIsInstance<Index>()
+            .firstOrNull { it.type == "PRIMARY KEY" }
             ?.columnsNames
             ?.toSet()
             ?: emptySet()
 
-        // Inline column-level: col_name TYPE PRIMARY KEY
         val inlinePk = createTable.columnDefinitions
-            .filter { colDef ->
-                val specs = colDef.columnSpecs?.map { it.uppercase() } ?: emptyList()
-                specs.zipWithNext().any { it == "PRIMARY" to "KEY" }
-            }
+            .filter { hasSpecPair(it, "PRIMARY", "KEY") }
             .map { it.columnName }
             .toSet()
 
         val primaryKeyColumns = tableLevelPk + inlinePk
         val columns = createTable.columnDefinitions.map { toColumn(it, primaryKeyColumns) }
-        return Table(name = createTable.table.name, columns = columns)
+
+        val foreignKeys = allIndexes.filterIsInstance<ForeignKeyIndex>().mapIndexed { i, fk ->
+            ForeignKey(
+                name = fk.name ?: "${createTable.table.name}_fk_$i",
+                columns = fk.columnsNames.orEmpty(),
+                referencedTable = fk.table.name,
+                referencedColumns = fk.referencedColumnNames.orEmpty()
+            )
+        }
+
+        val tableLevelUnique = allIndexes
+            .filterIsInstance<Index>()
+            .filter { it !is ForeignKeyIndex && it.type == "UNIQUE" }
+            .mapIndexed { i, idx ->
+                UniqueConstraint(name = idx.name ?: "${createTable.table.name}_uk_$i", columns = idx.columnsNames.orEmpty())
+            }
+
+        val inlineUnique = createTable.columnDefinitions
+            .filter { colDef -> colDef.columnSpecs?.any { it.uppercase() == "UNIQUE" } == true }
+            .map { UniqueConstraint(name = "${createTable.table.name}_${it.columnName}_uk", columns = listOf(it.columnName)) }
+
+        return Table(
+            name = createTable.table.name,
+            schema = createTable.table.schemaName,
+            columns = columns,
+            foreignKeys = foreignKeys,
+            uniqueConstraints = tableLevelUnique + inlineUnique
+        )
+    }
+
+    private fun hasSpecPair(colDef: ColumnDefinition, first: String, second: String): Boolean {
+        val specs = colDef.columnSpecs?.map { it.uppercase() } ?: emptyList()
+        return specs.zipWithNext().any { it == first to second }
     }
 
     private fun toColumn(colDef: ColumnDefinition, primaryKeyColumns: Set<String>): Column {
         val sqlType = colDef.colDataType.dataType.uppercase()
         val length = colDef.colDataType.argumentsStringList?.firstOrNull()?.toIntOrNull()
-        val specs = colDef.columnSpecs?.map { it.uppercase() } ?: emptyList()
-        val notNullDeclared = specs.zipWithNext().any { it == "NOT" to "NULL" }
+        val notNullDeclared = hasSpecPair(colDef, "NOT", "NULL")
         val isPk = primaryKeyColumns.contains(colDef.columnName)
 
         return Column(

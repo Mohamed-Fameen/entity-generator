@@ -18,9 +18,11 @@ class PasteDdlDialog(project: Project) : DialogWrapper(project) {
         emptyText.text = "Paste your CREATE TABLE statement(s) here..."
     }
     private val nameField = JBTextField()
+    private val baseClassField = JBTextField()
 
     val ddlText: String get() = ddlArea.text
     val entityName: String get() = nameField.text.trim()
+    val baseClassName: String get() = baseClassField.text.trim()
 
     init {
         title = "Generate Entity from DDL"
@@ -30,6 +32,9 @@ class PasteDdlDialog(project: Project) : DialogWrapper(project) {
     override fun createCenterPanel(): JComponent = panel {
         row("Entity name (optional):") {
             cell(nameField).align(AlignX.FILL)
+        }
+        row("Base class (optional):") {
+            cell(baseClassField).align(AlignX.FILL)
         }
         row {
             cell(JBScrollPane(ddlArea).apply { preferredSize = Dimension(640, 420) })

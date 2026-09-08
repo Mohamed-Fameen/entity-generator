@@ -12,33 +12,41 @@ import java.io.File
 
 object EntityGenerationRunner {
 
-    fun runFromDdl(project: Project, directory: PsiDirectory, ddl: String, requestedName: String?) {
+    fun runFromDdl(
+        project: Project,
+        directory: PsiDirectory,
+        ddl: String,
+        requestedName: String?,
+        baseClassName: String? = null
+    ) {
         val tables = DdlParser().parse(ddl)
         if (tables.isEmpty()) {
             Messages.showErrorDialog(project, "No CREATE TABLE statement found in the provided DDL.", "Generate Entity")
             return
         }
-        runForTables(project, directory, tables, requestedName)
+        runForTables(project, directory, tables, requestedName, baseClassName)
     }
 
-    fun runForTables(project: Project, directory: PsiDirectory, tables: List<Table>, requestedName: String?) {
+    fun runForTables(
+        project: Project,
+        directory: PsiDirectory,
+        tables: List<Table>,
+        requestedName: String?,
+        baseClassName: String? = null
+    ) {
         val basePackage = JavaDirectoryService.getInstance().getPackage(directory)?.qualifiedName.orEmpty()
         val generator = JpaEntityGenerator(basePackage)
         val targetDir = File(directory.virtualFile.path)
 
-        var filesWritten = 0
-        tables.forEach { table ->
-            val nameOverride = if (tables.size == 1) requestedName else null
-            generator.generate(table, nameOverride).forEach { javaFile ->
-                File(targetDir, "${javaFile.typeSpec.name}.java").writeText(javaFile.toString())
-                filesWritten++
-            }
+        val generatedFiles = generator.generateAll(tables, requestedName, baseClassName)
+        generatedFiles.forEach { file ->
+            File(targetDir, "${file.className}.java").writeText(file.source)
         }
 
         LocalFileSystem.getInstance().refreshIoFiles(listOf(targetDir))
         Messages.showInfoMessage(
             project,
-            "Generated $filesWritten Java class(es) from ${tables.size} table(s) in ${directory.virtualFile.path}",
+            "Generated ${generatedFiles.size} Java class(es) from ${tables.size} table(s) in ${directory.virtualFile.path}",
             "Generate Entity"
         )
     }

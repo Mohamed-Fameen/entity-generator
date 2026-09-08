@@ -1,181 +1,283 @@
 package com.entitygenerator.generator
 
 import com.entitygenerator.model.Column
+import com.entitygenerator.model.ForeignKey
 import com.entitygenerator.model.Table
 import com.entitygenerator.util.toCamelCase
 import com.entitygenerator.util.toPascalCase
-import com.squareup.javapoet.*
-import javax.lang.model.element.Modifier
+
+data class GeneratedFile(val className: String, val source: String)
 
 class JpaEntityGenerator(private val basePackage: String) {
 
-    private val jpa = "jakarta.persistence" // switch to "javax.persistence" for older stacks
+    fun generateAll(tables: List<Table>, nameOverride: String? = null, baseClassName: String? = null): List<GeneratedFile> {
+        val classNameByTable: Map<String, String> = tables.associate { table ->
+            val raw = if (tables.size == 1 && nameOverride != null) nameOverride else table.name
+            table.name to raw.toPascalCase()
+        }
 
-    /**
-     * Returns one JavaFile for a simple entity, or two (embeddable ID class + entity)
-     * when the table has a composite (multi-column) primary key.
-     */
-    fun generate(table: Table, classNameOverride: String? = null): List<JavaFile> {
-        val className = (classNameOverride ?: table.name).toPascalCase()
-        val pkColumns = table.primaryKeyColumns
+        val incomingReferences: Map<String, List<Pair<Table, ForeignKey>>> =
+            tables.flatMap { owner -> owner.foreignKeys.map { fk -> fk.referencedTable to (owner to fk) } }
+                .groupBy({ it.first }, { it.second })
 
-        return if (pkColumns.size > 1) {
-            val idClassName = "${className}Id"
-            val idClass = buildEmbeddedIdClass(idClassName, pkColumns)
-            val entityClass = buildEntityClass(className, table, idClassName)
-            listOf(
-                JavaFile.builder(basePackage, idClass).build(),
-                JavaFile.builder(basePackage, entityClass).build()
-            )
-        } else {
-            listOf(JavaFile.builder(basePackage, buildEntityClass(className, table, idClassName = null)).build())
+        return tables.flatMap { table ->
+            val className = classNameByTable.getValue(table.name)
+            val refsToThisTable = incomingReferences[table.name].orEmpty()
+
+            if (table.primaryKeyColumns.size > 1) {
+                val idClassName = "${className}Id"
+                listOf(
+                    buildEmbeddedIdFile(idClassName, table.primaryKeyColumns),
+                    buildEntityFile(table, className, idClassName, classNameByTable, refsToThisTable, baseClassName)
+                )
+            } else {
+                listOf(buildEntityFile(table, className, idClassName = null, classNameByTable, refsToThisTable, baseClassName))
+            }
         }
     }
 
-    private fun buildEntityClass(className: String, table: Table, idClassName: String?): TypeSpec {
-        val classBuilder = TypeSpec.classBuilder(className)
-            .addModifiers(Modifier.PUBLIC)
-            .addAnnotation(AnnotationSpec.builder(ClassName.get(jpa, "Entity")).build())
-            .addAnnotation(
-                AnnotationSpec.builder(ClassName.get(jpa, "Table"))
-                    .addMember("name", "\$S", table.name)
-                    .build()
-            )
+    private fun buildEntityFile(
+        table: Table,
+        className: String,
+        idClassName: String?,
+        classNameByTable: Map<String, String>,
+        incomingReferences: List<Pair<Table, ForeignKey>>,
+        baseClassName: String?
+    ): GeneratedFile {
+        val imports = sortedSetOf(
+            "jakarta.persistence.Column",
+            "jakarta.persistence.Entity",
+            "jakarta.persistence.Table",
+            "lombok.AllArgsConstructor",
+            "lombok.Getter",
+            "lombok.NoArgsConstructor",
+            "lombok.Setter"
+        )
+
+        val hasBaseClass = !baseClassName.isNullOrBlank()
+        val builderAnnotation = if (hasBaseClass) {
+            imports += "lombok.experimental.SuperBuilder"
+            "@SuperBuilder"
+        } else {
+            imports += "lombok.Builder"
+            "@Builder"
+        }
 
         val pkColumnNames = table.primaryKeyColumns.map { it.name }.toSet()
+        val relationshipFks = table.foreignKeys.filter { fk -> fk.columns.none { it in pkColumnNames } }
+        val relationshipColumnNames = relationshipFks.flatMap { it.columns }.toSet()
+
+        val members = mutableListOf<String>()
 
         if (idClassName != null) {
-            val idType = ClassName.get(basePackage, idClassName)
-            classBuilder.addField(
-                FieldSpec.builder(idType, "id", Modifier.PRIVATE)
-                    .addAnnotation(ClassName.get(jpa, "EmbeddedId"))
-                    .build()
-            )
-            classBuilder.addMethod(getter("id", idType))
-            classBuilder.addMethod(setter("id", idType))
+            imports += "jakarta.persistence.EmbeddedId"
+            members += renderField(listOf("@EmbeddedId"), idClassName, "id")
         }
 
         table.columns.forEach { column ->
-            if (idClassName != null && pkColumnNames.contains(column.name)) return@forEach // lives in the embedded ID class instead
+            if (idClassName != null && pkColumnNames.contains(column.name)) return@forEach
+            if (column.name in relationshipColumnNames) return@forEach
 
-            val fieldName = column.name.toCamelCase()
-            val type = resolveJavaType(column)
-            val fieldBuilder = FieldSpec.builder(type, fieldName, Modifier.PRIVATE)
-
+            val annotations = mutableListOf<String>()
             if (idClassName == null && column.isPrimaryKey) {
-                fieldBuilder.addAnnotation(ClassName.get(jpa, "Id"))
-                fieldBuilder.addAnnotation(
-                    AnnotationSpec.builder(ClassName.get(jpa, "GeneratedValue"))
-                        .addMember("strategy", "\$T.IDENTITY", ClassName.get(jpa, "GenerationType"))
-                        .build()
-                )
+                imports += "jakarta.persistence.Id"
+                imports += "jakarta.persistence.GeneratedValue"
+                imports += "jakarta.persistence.GenerationType"
+                annotations += "@Id"
+                annotations += "@GeneratedValue(strategy = GenerationType.IDENTITY)"
             }
-            fieldBuilder.addAnnotation(columnAnnotation(column))
+            annotations += columnAnnotation(column)
 
-            classBuilder.addField(fieldBuilder.build())
-            classBuilder.addMethod(getter(fieldName, type))
-            classBuilder.addMethod(setter(fieldName, type))
-        }
-
-        return classBuilder.build()
-    }
-
-    private fun buildEmbeddedIdClass(className: String, pkColumns: List<Column>): TypeSpec {
-        val builder = TypeSpec.classBuilder(className)
-            .addModifiers(Modifier.PUBLIC)
-            .addSuperinterface(ClassName.get("java.io", "Serializable"))
-            .addAnnotation(ClassName.get(jpa, "Embeddable"))
-
-        pkColumns.forEach { column ->
-            val fieldName = column.name.toCamelCase()
             val type = resolveJavaType(column)
-            builder.addField(
-                FieldSpec.builder(type, fieldName, Modifier.PRIVATE)
-                    .addAnnotation(columnAnnotation(column))
-                    .build()
+            type.importFqcn?.let { imports += it }
+            members += renderField(annotations, type.simpleName, column.name.toCamelCase())
+        }
+
+        relationshipFks.forEach { fk ->
+            val referencedClassName = classNameByTable[fk.referencedTable]
+            if (referencedClassName == null) {
+                fk.columns.forEach { colName ->
+                    table.columns.firstOrNull { it.name == colName }?.let { column ->
+                        val type = resolveJavaType(column)
+                        type.importFqcn?.let { imports += it }
+                        members += renderField(listOf(columnAnnotation(column)), type.simpleName, column.name.toCamelCase())
+                    }
+                }
+                return@forEach
+            }
+
+            imports += "jakarta.persistence.ManyToOne"
+            imports += "jakarta.persistence.JoinColumn"
+            val fieldName = relationshipFieldName(fk)
+            val joinAnnotation = joinColumnAnnotation(fk, table.columns, imports)
+            members += renderField(listOf("@ManyToOne", joinAnnotation), referencedClassName, fieldName)
+        }
+
+        incomingReferences.forEach { (owningTable, fk) ->
+            val owningClassName = classNameByTable[owningTable.name] ?: return@forEach
+            imports += "jakarta.persistence.OneToMany"
+            imports += "java.util.List"
+            val owningFieldName = relationshipFieldName(fk)
+            val collectionFieldName = pluralize(owningClassName.replaceFirstChar { it.lowercase() })
+            members += renderField(
+                listOf("@OneToMany(mappedBy = \"$owningFieldName\")"),
+                "List<$owningClassName>",
+                collectionFieldName
             )
-            builder.addMethod(getter(fieldName, type))
-            builder.addMethod(setter(fieldName, type))
         }
 
-        builder.addMethod(buildEqualsMethod(className, pkColumns))
-        builder.addMethod(buildHashCodeMethod(pkColumns))
+        val classDeclaration = classDeclarationLine(className, baseClassName, imports)
 
-        return builder.build()
-    }
-
-    private fun buildEqualsMethod(idClassName: String, pkColumns: List<Column>): MethodSpec {
-        val selfClass = ClassName.get(basePackage, idClassName)
-        val objects = ClassName.get("java.util", "Objects")
-
-        val comparison = CodeBlock.builder()
-        pkColumns.forEachIndexed { index, column ->
-            val fieldName = column.name.toCamelCase()
-            if (index > 0) comparison.add(" && ")
-            comparison.add("\$T.equals(this.\$N, that.\$N)", objects, fieldName, fieldName)
+        val source = buildString {
+            appendLine("package $basePackage;")
+            appendLine()
+            imports.forEach { appendLine("import $it;") }
+            appendLine()
+            appendLine("@Getter")
+            appendLine("@Setter")
+            appendLine("@NoArgsConstructor")
+            appendLine("@AllArgsConstructor")
+            appendLine(builderAnnotation)
+            appendLine("@Entity")
+            appendLine(tableAnnotation(table))
+            appendLine(classDeclaration)
+            appendLine()
+            append(members.joinToString("\n\n"))
+            appendLine()
+            appendLine()
+            append("}")
         }
 
-        return MethodSpec.methodBuilder("equals")
-            .addAnnotation(Override::class.java)
-            .addModifiers(Modifier.PUBLIC)
-            .returns(TypeName.BOOLEAN)
-            .addParameter(TypeName.OBJECT, "o")
-            .beginControlFlow("if (this == o)")
-            .addStatement("return true")
-            .endControlFlow()
-            .beginControlFlow("if (o == null || getClass() != o.getClass())")
-            .addStatement("return false")
-            .endControlFlow()
-            .addStatement("\$T that = (\$T) o", selfClass, selfClass)
-            .addStatement("return \$L", comparison.build())
-            .build()
+        return GeneratedFile(className, source)
     }
 
-    private fun buildHashCodeMethod(pkColumns: List<Column>): MethodSpec {
-        val objects = ClassName.get("java.util", "Objects")
-        val args = CodeBlock.builder()
-        pkColumns.forEachIndexed { index, column ->
-            if (index > 0) args.add(", ")
-            args.add("\$N", column.name.toCamelCase())
+    private fun buildEmbeddedIdFile(className: String, pkColumns: List<Column>): GeneratedFile {
+        val imports = sortedSetOf(
+            "jakarta.persistence.Column",
+            "jakarta.persistence.Embeddable",
+            "lombok.AllArgsConstructor",
+            "lombok.Builder",
+            "lombok.EqualsAndHashCode",
+            "lombok.Getter",
+            "lombok.NoArgsConstructor",
+            "lombok.Setter",
+            "java.io.Serializable"
+        )
+
+        val members = pkColumns.map { column ->
+            val type = resolveJavaType(column)
+            type.importFqcn?.let { imports += it }
+            renderField(listOf(columnAnnotation(column)), type.simpleName, column.name.toCamelCase())
         }
 
-        return MethodSpec.methodBuilder("hashCode")
-            .addAnnotation(Override::class.java)
-            .addModifiers(Modifier.PUBLIC)
-            .returns(TypeName.INT)
-            .addStatement("return \$T.hash(\$L)", objects, args.build())
-            .build()
+        val source = buildString {
+            appendLine("package $basePackage;")
+            appendLine()
+            imports.forEach { appendLine("import $it;") }
+            appendLine()
+            appendLine("@Getter")
+            appendLine("@Setter")
+            appendLine("@NoArgsConstructor")
+            appendLine("@AllArgsConstructor")
+            appendLine("@Builder")
+            appendLine("@EqualsAndHashCode")
+            appendLine("@Embeddable")
+            appendLine("public class $className implements Serializable {")
+            appendLine()
+            append(members.joinToString("\n\n"))
+            appendLine()
+            appendLine()
+            append("}")
+        }
+
+        return GeneratedFile(className, source)
     }
 
-    private fun columnAnnotation(column: Column): AnnotationSpec {
-        val builder = AnnotationSpec.builder(ClassName.get(jpa, "Column"))
-            .addMember("name", "\$S", column.name)
-        if (!column.nullable) builder.addMember("nullable", "false")
-        column.length?.let { builder.addMember("length", "\$L", it) }
-        return builder.build()
+    private fun classDeclarationLine(className: String, baseClassName: String?, imports: MutableSet<String>): String {
+        if (baseClassName.isNullOrBlank()) return "public class $className {"
+        val simpleName = if (baseClassName.contains(".")) {
+            imports += baseClassName
+            baseClassName.substringAfterLast(".")
+        } else {
+            baseClassName
+        }
+        return "public class $className extends $simpleName {"
     }
 
-    private fun resolveJavaType(column: Column): ClassName = when (column.javaType) {
-        "Long" -> ClassName.get("java.lang", "Long")
-        "Integer" -> ClassName.get("java.lang", "Integer")
-        "Boolean" -> ClassName.get("java.lang", "Boolean")
-        "BigDecimal" -> ClassName.get("java.math", "BigDecimal")
-        "LocalDate" -> ClassName.get("java.time", "LocalDate")
-        "LocalDateTime" -> ClassName.get("java.time", "LocalDateTime")
-        else -> ClassName.get("java.lang", "String")
+    private fun renderField(annotations: List<String>, type: String, fieldName: String): String =
+        buildString {
+            annotations.forEach { appendLine("    $it") }
+            append("    private $type $fieldName;")
+        }
+
+    private fun columnAnnotation(column: Column): String {
+        val members = mutableListOf("name = \"${column.name}\"")
+        if (!column.nullable) members += "nullable = false"
+        column.length?.let { members += "length = $it" }
+        return "@Column(${members.joinToString(", ")})"
     }
 
-    private fun getter(fieldName: String, type: TypeName) =
-        MethodSpec.methodBuilder("get" + fieldName.replaceFirstChar { it.uppercase() })
-            .addModifiers(Modifier.PUBLIC)
-            .returns(type)
-            .addStatement("return this.\$N", fieldName)
-            .build()
+    private fun tableAnnotation(table: Table): String {
+        val members = mutableListOf("name = \"${table.name}\"")
+        if (!table.schema.isNullOrBlank()) {
+            members += "schema = \"${table.schema}\""
+        }
+        if (table.uniqueConstraints.isNotEmpty()) {
+            val constraints = table.uniqueConstraints.joinToString(", ") { uc ->
+                val cols = uc.columns.joinToString(", ") { "\"$it\"" }
+                "@UniqueConstraint(columnNames = {$cols})"
+            }
+            members += "uniqueConstraints = {$constraints}"
+        }
+        return "@Table(${members.joinToString(", ")})"
+    }
 
-    private fun setter(fieldName: String, type: TypeName) =
-        MethodSpec.methodBuilder("set" + fieldName.replaceFirstChar { it.uppercase() })
-            .addModifiers(Modifier.PUBLIC)
-            .addParameter(type, fieldName)
-            .addStatement("this.\$N = \$N", fieldName, fieldName)
-            .build()
+    private fun joinColumnAnnotation(fk: ForeignKey, tableColumns: List<Column>, imports: MutableSet<String>): String {
+        val allNullable = fk.columns.all { colName -> tableColumns.firstOrNull { it.name == colName }?.nullable ?: true }
+
+        if (fk.columns.size == 1) {
+            val members = mutableListOf("name = \"${fk.columns.first()}\"")
+            if (!allNullable) members += "nullable = false"
+            return "@JoinColumn(${members.joinToString(", ")})"
+        }
+
+        imports += "jakarta.persistence.JoinColumns"
+        val joins = fk.columns.mapIndexed { i, colName ->
+            val refCol = fk.referencedColumns.getOrElse(i) { colName }
+            "@JoinColumn(name = \"$colName\", referencedColumnName = \"$refCol\")"
+        }.joinToString(", ")
+        return "@JoinColumns({$joins})"
+    }
+
+    private fun relationshipFieldName(fk: ForeignKey): String {
+        if (fk.columns.size == 1) {
+            val col = fk.columns.first()
+            val stripped = when {
+                col.endsWith("_id", ignoreCase = true) -> col.dropLast(3)
+                col.endsWith("Id") -> col.dropLast(2)
+                else -> col
+            }
+            return stripped.toCamelCase()
+        }
+        return fk.referencedTable.toCamelCase()
+    }
+
+    private fun pluralize(word: String): String = when {
+        word.endsWith("s") -> word // assume already plural -- matches typical DB naming ("orders", "customers")
+        word.endsWith("y") && word.length > 1 && word[word.length - 2].lowercaseChar() !in "aeiou" -> word.dropLast(1) + "ies"
+        word.endsWith("x") || word.endsWith("z") || word.endsWith("ch") || word.endsWith("sh") -> word + "es"
+        else -> word + "s"
+    }
+
+    private data class JavaType(val simpleName: String, val importFqcn: String?)
+
+    private fun resolveJavaType(column: Column): JavaType = when (column.javaType) {
+        "Long" -> JavaType("Long", null)
+        "Integer" -> JavaType("Integer", null)
+        "Boolean" -> JavaType("Boolean", null)
+        "BigDecimal" -> JavaType("BigDecimal", "java.math.BigDecimal")
+        "LocalDate" -> JavaType("LocalDate", "java.time.LocalDate")
+        "LocalDateTime" -> JavaType("LocalDateTime", "java.time.LocalDateTime")
+        else -> JavaType("String", null)
+    }
 }

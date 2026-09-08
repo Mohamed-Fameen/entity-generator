@@ -21,4 +21,10 @@ dependencies {
         bundledPlugin("com.intellij.java")   // <- this was missing
         testFramework(TestFrameworkType.Platform)
     }
+
+    tasks {
+        test {
+            failOnNoDiscoveredTests = false
+        }
+    }
 }
