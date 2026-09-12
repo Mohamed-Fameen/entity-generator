@@ -13,7 +13,7 @@ dependencies {
 
     implementation("org.postgresql:postgresql:42.7.4")
     implementation("com.mysql:mysql-connector-j:9.1.0")
-    implementation("com.h2database:h2:2.3.232")
+    implementation("com.h2database:h2:2.5.250")
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
